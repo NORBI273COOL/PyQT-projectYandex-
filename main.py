@@ -12,45 +12,15 @@ from query_db import *
 
 from brush_settings_dialog import BrushSettingsDialog
 from figure_settings_dialog import FigureSettingsDialog
+from eraser_settings_dialog import EraserSettingsDialog
 from files_history import FilesHistoryDialog
-
-
-class BrushTool:
-    def __init__(self, color, size):
-        super(BrushTool, self).__init__()
-        self.color = color
-        self.size = size
-
-    def set_color(self, color):
-        self.color = color
-
-    def set_size(self, size):
-        self.size = size
-
-    def get_as_dict(self):
-        return {
-            'color': self.color,
-            'size': self.size
-        }
-
-
-class FigureTool:
-    def __init__(self, name, color, outline_color):
-        super(FigureTool, self).__init__()
-        self.color = color
-        self.outline_color = outline_color
-        self.name = name
-
-    def get_as_dict(self):
-        return {
-            'color': self.color,
-            'outline_color': self.outline_color,
-        }
+from tools import *
 
 
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.selecting = False
         uic.loadUi('main.ui', self)
         self.fill_tool_bar()
         self.setMouseTracking(False)
@@ -71,9 +41,10 @@ class Window(QMainWindow):
         self.last_point = None
 
         self.drawing_figure = False
-        self.drawing_figure_begin = QPoint()
-        self.drawing_figure_end = QPoint()
+        self.ghost_figure_begin = QPoint()
+        self.ghost_figure_end = QPoint()
 
+        self.eraser = False
         self.brush_settings = {
             'size': 12,
             'color': QColor(0, 0, 0)
@@ -81,6 +52,10 @@ class Window(QMainWindow):
         self.figure_settings = {
             'color': QColor(0, 0, 0),
             'outline_color': QColor(0, 0, 0),
+        }
+        self.eraser_setting = {
+            'size': 12,
+            'color': QColor(255, 255, 255)
         }
 
         self.current_tool = BrushTool(self.brush_settings.get('color'), self.brush_settings.get('size'))
@@ -101,6 +76,8 @@ class Window(QMainWindow):
         painter.drawImage(0, 0, self.image, 0, 0)
 
         self.image = new_image
+
+        painter.end()
         self.update()
 
     def fill_tool_bar(self):
@@ -116,24 +93,40 @@ class Window(QMainWindow):
             self.current_tool = BrushTool(self.brush_settings.get('color'), self.brush_settings.get('size'))
         elif tool_name in ['circle', 'square']:
             self.current_tool = FigureTool(tool_name, **self.figure_settings)
+        elif tool_name == 'eraser':
+            self.current_tool = EraserTool(self.eraser_setting.get('size'))
+        elif tool_name == 'selection':
+            self.current_tool = SelectionTool()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.drawing = True
             self.last_point = event.pos()
 
-            if not self.drawing_figure and isinstance(self.current_tool, FigureTool):
+            if (not self.drawing_figure and isinstance(self.current_tool, FigureTool)) or \
+                    (not self.selecting and isinstance(self.current_tool, SelectionTool)):
                 # Start drawing sub figure
+                self.ghost_figure_begin = event.pos()
+                self.ghost_figure_end = event.pos()
+
+            if not self.drawing_figure and isinstance(self.current_tool, FigureTool):
                 self.drawing_figure = True
-                self.drawing_figure_begin = event.pos()
-                self.drawing_figure_end = event.pos()
+            if not self.selecting and isinstance(self.current_tool, SelectionTool):
+                self.selecting = True
+            if not self.eraser and isinstance(self.current_tool, EraserTool):
+                self.eraser = True
 
                 self.update()
         if event.button() == Qt.RightButton:
             if isinstance(self.current_tool, BrushTool):
+                print(self.current_tool.get_as_dict())
                 brush_settings_dialog_ = BrushSettingsDialog(event.pos(), self.current_tool.get_as_dict())
                 brush_settings_dialog_.exec_()
                 self.current_tool = BrushTool(**brush_settings_dialog_.get_settings())
+            elif isinstance(self.current_tool, EraserTool):
+                eraser_settings_dialog_ = EraserSettingsDialog(event.pos(), self.current_tool.get_as_dict())
+                eraser_settings_dialog_.exec_()
+                self.current_tool = EraserTool(**eraser_settings_dialog_.get_settings())
             elif isinstance(self.current_tool, FigureTool):
                 figure_settings_dialog_ = FigureSettingsDialog(event.pos(), self.figure_settings)
                 figure_settings_dialog_.exec_()
@@ -142,18 +135,33 @@ class Window(QMainWindow):
 
     def mouseMoveEvent(self, event):
         if event.buttons() and Qt.LeftButton and self.drawing:
-            if isinstance(self.current_tool, BrushTool):
+            if isinstance(self.current_tool, BrushTool) or isinstance(self.current_tool, EraserTool):
                 self.previous_image = self.image.copy()
+
                 painter = QPainter(self.image)
                 painter.setPen(QPen(self.current_tool.color, self.current_tool.size, Qt.SolidLine, Qt.RoundCap))
+
                 painter.drawLine(self.last_point, event.pos())
                 self.last_point = event.pos()
+
+                painter.end()
                 self.update()
 
-        if self.drawing_figure and isinstance(self.current_tool, FigureTool):
+
+        if (self.drawing_figure and isinstance(self.current_tool, FigureTool)) or \
+                (self.selecting and isinstance(self.current_tool, SelectionTool)):
             # Update figure ghost
-            self.drawing_figure_end = event.pos()
+            self.ghost_figure_end = event.pos()
             self.update()
+        if event.buttons() and Qt.LeftButton and self.eraser:
+            if isinstance(self.current_tool, EraserTool):
+                self.previous_image = self.image.copy()
+                painter = QPainter(self.image)
+                painter.setPen(QPen(self.current_tool.size))
+                painter.drawLine(self.last_point, event.pos())
+                self.last_point = event.pos()
+                painter.end()
+                self.update()
 
     def draw_figure_by_name_and_rect(self, name, rect):
         if isinstance(self.current_tool, FigureTool):
@@ -171,35 +179,57 @@ class Window(QMainWindow):
             painter.end()
             self.update()
 
+    def delete_selected(self):
+        painter = QPainter(self.image)
+        painter.setBrush(QBrush(QColor(255, 255, 255), Qt.SolidPattern))
+        painter.setPen(QPen(QColor(255, 255, 255), Qt.SolidLine))
+        painter.drawRect(QRect(self.ghost_figure_begin, self.ghost_figure_end))
+        painter.end()
+        self.update()
+
     def mouseReleaseEvent(self, event):
         if self.drawing_figure and isinstance(self.current_tool, FigureTool):
             # End of creating figure
-            self.drawing_figure_end = event.pos()
+            self.ghost_figure_end = event.pos()
             self.drawing_figure = False
 
             self.draw_figure_by_name_and_rect(self.current_tool.name,
-                                              QRect(self.drawing_figure_begin, self.drawing_figure_end))
+                                              QRect(self.ghost_figure_begin, self.ghost_figure_end))
+        elif self.selecting and isinstance(self.current_tool, SelectionTool):
+            self.delete_selected()
+
+            self.ghost_figure_begin = event.pos()
+            self.ghost_figure_end = event.pos()
+
+            self.selecting = False
+            self.update()
 
     def paintEvent(self, event):
         canvas_painter = QPainter(self)
         canvas_painter.drawImage(0, 0, self.image, 0, 0)
 
+        ghost_figure_rect = QRect(self.ghost_figure_begin, self.ghost_figure_end)
         if self.drawing_figure and isinstance(self.current_tool, FigureTool):
+            # painter settings
             color = QColor(self.current_tool.color)
             color.setAlpha(40)
             canvas_painter.setBrush(QBrush(color))
             canvas_painter.setPen(QPen(self.current_tool.outline_color))
 
             # drawing figure ghost
-            ghost_figure_rect = QRect(self.drawing_figure_begin, self.drawing_figure_end)
             if self.current_tool.name == 'circle':
                 canvas_painter.drawEllipse(ghost_figure_rect)
             elif self.current_tool.name == 'square':
                 canvas_painter.drawRect(ghost_figure_rect)
 
-            canvas_painter.end()
+            self.update()
+        elif self.selecting and isinstance(self.current_tool, SelectionTool):
+            canvas_painter.setPen(QPen(QColor(0, 0, 0), 2, Qt.DashLine))
+            canvas_painter.drawRect(ghost_figure_rect)
 
             self.update()
+
+        canvas_painter.end()
 
     def save(self):
         file_path, _ = QFileDialog.getSaveFileName(self, "Open Image", "",
@@ -212,7 +242,8 @@ class Window(QMainWindow):
         self.save_to_history(file_path)
         self.previous_image = self.image.copy()
 
-    def save_to_history(self, file_path):
+    @staticmethod
+    def save_to_history(file_path):
         save_to_history(file_path, str(datetime.datetime.now()), os.path.basename(file_path))
 
     def open(self, file_path=None):
@@ -270,8 +301,13 @@ class Window(QMainWindow):
                 self.save()
 
 
+def except_hook(cls, exception, traceback):
+    sys.__excepthook__(cls, exception, traceback)
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = Window()
     window.show()
-    app.exec()
+    sys.excepthook = except_hook
+    sys.exit(app.exec())
