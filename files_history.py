@@ -1,6 +1,7 @@
 from query_db import *
 from PyQt5.QtWidgets import QDialog
 from PyQt5 import uic
+from PyQt5.QtWidgets import QTableWidgetItem
 
 
 class FilesHistoryDialog(QDialog):
